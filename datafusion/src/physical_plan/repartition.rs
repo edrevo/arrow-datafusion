@@ -51,8 +51,10 @@ type MaybeBatch = Option<ArrowResult<RecordBatch>>;
 pub struct RepartitionExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
+
     /// Partitioning scheme to use
     partitioning: Partitioning,
+
     /// Channels for sending batches from input partitions to output partitions.
     /// Key is the partition number
     channels: Arc<
@@ -60,6 +62,9 @@ pub struct RepartitionExec {
             HashMap<usize, (UnboundedSender<MaybeBatch>, UnboundedReceiver<MaybeBatch>)>,
         >,
     >,
+
+    /// A vector of input partition number that are being computed.
+    run_input_partitions: Arc<Mutex<Vec<usize>>>,
 
     /// Execution metrics
     metrics: RepartitionMetrics,
@@ -106,6 +111,82 @@ impl RepartitionExec {
     pub fn partitioning(&self) -> &Partitioning {
         &self.partitioning
     }
+
+    async fn execute_input_partitions(&self, input_partitions: &[usize]) -> Result<()> {
+        let mut channels = self.channels.lock().await;
+        let mut run_input_partitions = self.run_input_partitions.lock().await;
+        let num_output_partitions = self.partitioning.partition_count();
+        // if this is the first partition to be invoked then we need to set up initial state
+        if channels.is_empty() {
+            assert!(run_input_partitions.is_empty());
+            run_input_partitions.extend_from_slice(input_partitions);
+            // create one channel per *output* partition
+            for partition in 0..num_output_partitions {
+                // Note that this operator uses unbounded channels to avoid deadlocks because
+                // the output partitions can be read in any order and this could cause input
+                // partitions to be blocked when sending data to output UnboundedReceivers that are not
+                // being read yet. This may cause high memory usage if the next operator is
+                // reading output partitions in order rather than concurrently. One workaround
+                // for this would be to add spill-to-disk capabilities.
+                let (sender, receiver) =
+                    mpsc::unbounded_channel::<Option<ArrowResult<RecordBatch>>>();
+                channels.insert(partition, (sender, receiver));
+            }
+            // Use fixed random state
+            let random = ahash::RandomState::with_seeds(0, 0, 0, 0);
+
+            // launch one async task per *input* partition
+            for i in run_input_partitions.iter() {
+                let txs: HashMap<_, _> = channels
+                    .iter()
+                    .map(|(partition, (tx, _rx))| (*partition, tx.clone()))
+                    .collect();
+
+                let input_task: JoinHandle<Result<()>> =
+                    tokio::spawn(Self::pull_from_input(
+                        random.clone(),
+                        self.input.clone(),
+                        *i,
+                        txs.clone(),
+                        self.partitioning.clone(),
+                        self.metrics.clone(),
+                    ));
+
+                // In a separate task, wait for each input to be done
+                // (and pass along any errors, including panic!s)
+                tokio::spawn(Self::wait_for_task(input_task, txs));
+            }
+        } else if *run_input_partitions != input_partitions {
+            return Err(DataFusionError::Execution(format!(
+                "Repartition's execute methods are being called multiple times with different input partitions to run.
+                Previous input partitions: {:?}.
+                Current input partitions: {:?}",
+                *run_input_partitions,
+                input_partitions
+            )));
+        }
+        Ok(())
+    }
+
+    async fn extract_output_partition_stream(
+        &self,
+        num_input_partitions: usize,
+        output_partition: usize,
+    ) -> Result<SendableRecordBatchStream> {
+        // lock mutexes
+        let mut channels = self.channels.lock().await;
+
+        // now return stream for the specified *output* partition which will
+        // read from the channel
+        Ok(Box::pin(RepartitionStream {
+            num_input_partitions,
+            num_input_partitions_processed: 0,
+            schema: self.input.schema(),
+            input: UnboundedReceiverStream::new(
+                channels.remove(&output_partition).unwrap().1,
+            ),
+        }))
+    }
 }
 
 #[async_trait]
@@ -144,64 +225,29 @@ impl ExecutionPlan for RepartitionExec {
     }
 
     async fn execute(&self, partition: usize) -> Result<SendableRecordBatchStream> {
-        // lock mutexes
-        let mut channels = self.channels.lock().await;
-
         let num_input_partitions = self.input.output_partitioning().partition_count();
-        let num_output_partitions = self.partitioning.partition_count();
+        self.execute_input_partitions(&(0..num_input_partitions).collect::<Vec<_>>())
+            .await?;
+        self.extract_output_partition_stream(num_input_partitions, partition)
+            .await
+    }
 
-        // if this is the first partition to be invoked then we need to set up initial state
-        if channels.is_empty() {
-            // create one channel per *output* partition
-            for partition in 0..num_output_partitions {
-                // Note that this operator uses unbounded channels to avoid deadlocks because
-                // the output partitions can be read in any order and this could cause input
-                // partitions to be blocked when sending data to output UnboundedReceivers that are not
-                // being read yet. This may cause high memory usage if the next operator is
-                // reading output partitions in order rather than concurrently. One workaround
-                // for this would be to add spill-to-disk capabilities.
-                let (sender, receiver) =
-                    mpsc::unbounded_channel::<Option<ArrowResult<RecordBatch>>>();
-                channels.insert(partition, (sender, receiver));
-            }
-            // Use fixed random state
-            let random = ahash::RandomState::with_seeds(0, 0, 0, 0);
-
-            // launch one async task per *input* partition
-            for i in 0..num_input_partitions {
-                let txs: HashMap<_, _> = channels
-                    .iter()
-                    .map(|(partition, (tx, _rx))| (*partition, tx.clone()))
-                    .collect();
-
-                let input_task: JoinHandle<Result<()>> =
-                    tokio::spawn(Self::pull_from_input(
-                        random.clone(),
-                        self.input.clone(),
-                        i,
-                        txs.clone(),
-                        self.partitioning.clone(),
-                        self.metrics.clone(),
-                    ));
-
-                // In a separate task, wait for each input to be done
-                // (and pass along any errors, including panic!s)
-                tokio::spawn(Self::wait_for_task(input_task, txs));
-            }
-        }
-
-        // now return stream for the specified *output* partition which will
-        // read from the channel
-        Ok(Box::pin(RepartitionStream {
-            num_input_partitions,
-            num_input_partitions_processed: 0,
-            schema: self.input.schema(),
-            input: UnboundedReceiverStream::new(channels.remove(&partition).unwrap().1),
-        }))
+    async fn execute_input_partition(
+        &self,
+        input_partition: usize,
+        output_partition: usize,
+    ) -> Result<SendableRecordBatchStream> {
+        self.execute_input_partitions(&[input_partition]).await?;
+        self.extract_output_partition_stream(1, output_partition)
+            .await
     }
 
     fn metrics(&self) -> HashMap<String, SQLMetric> {
         self.metrics.to_hashmap()
+    }
+
+    fn requires_distributed_shuffle(&self) -> bool {
+        true
     }
 
     fn fmt_as(
@@ -228,6 +274,7 @@ impl RepartitionExec {
             partitioning,
             channels: Arc::new(Mutex::new(HashMap::new())),
             metrics: RepartitionMetrics::new(),
+            run_input_partitions: Arc::new(Mutex::new(vec![])),
         })
     }
 

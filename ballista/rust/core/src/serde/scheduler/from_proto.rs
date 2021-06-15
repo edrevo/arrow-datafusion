@@ -27,6 +27,8 @@ use crate::serde::scheduler::{
 use datafusion::logical_plan::LogicalPlan;
 use uuid::Uuid;
 
+use super::OutputPartitionId;
+
 impl TryInto<Action> for protobuf::Action {
     type Error = BallistaError;
 
@@ -68,6 +70,17 @@ impl TryInto<PartitionId> for protobuf::PartitionId {
             &self.job_id,
             self.stage_id as usize,
             self.partition_id as usize,
+        ))
+    }
+}
+
+impl TryInto<OutputPartitionId> for protobuf::OutputPartitionId {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<OutputPartitionId, Self::Error> {
+        Ok(OutputPartitionId::new(
+            self.partition_id.ok_or(BallistaError::Internal("Found OutputPartitionId without input_partition".to_string()))?.try_into()?,
+            self.output_partition_id as usize
         ))
     }
 }

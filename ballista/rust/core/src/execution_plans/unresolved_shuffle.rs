@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::{any::Any, pin::Pin};
 
+use super::AggregationStrategy;
 use crate::memory_stream::MemoryStream;
 use crate::serde::scheduler::PartitionLocation;
 
@@ -44,6 +45,8 @@ pub struct UnresolvedShuffleExec {
 
     // The partition count this node will have once it is replaced with a ShuffleReaderExec
     pub partition_count: usize,
+
+    pub aggregation_strategy: AggregationStrategy,
 }
 
 impl UnresolvedShuffleExec {
@@ -52,11 +55,13 @@ impl UnresolvedShuffleExec {
         query_stage_ids: Vec<usize>,
         schema: SchemaRef,
         partition_count: usize,
+        aggregation_strategy: AggregationStrategy,
     ) -> Self {
         Self {
             query_stage_ids,
             schema,
             partition_count,
+            aggregation_strategy,
         }
     }
 }

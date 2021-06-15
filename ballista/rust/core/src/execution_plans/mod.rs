@@ -18,10 +18,12 @@
 //! This module contains execution plans that are needed to distribute Datafusion's execution plans into
 //! several Ballista executors.
 
+mod aggregation_strategy;
 mod query_stage;
 mod shuffle_reader;
 mod unresolved_shuffle;
 
+pub use aggregation_strategy::AggregationStrategy;
 pub use query_stage::QueryStageExec;
 pub use shuffle_reader::ShuffleReaderExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;

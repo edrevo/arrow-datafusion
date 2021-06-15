@@ -128,6 +128,26 @@ impl ExecutionPlan for MergeExec {
         }
     }
 
+    async fn execute_input_partition(
+        &self,
+        input_partition: usize,
+        output_partition: usize,
+    ) -> Result<SendableRecordBatchStream> {
+        // MergeExec produces a single partition
+        if 0 != output_partition {
+            return Err(DataFusionError::Internal(format!(
+                "MergeExec invalid partition {}",
+                output_partition
+            )));
+        }
+
+        self.input.execute(input_partition).await
+    }
+
+    fn requires_distributed_shuffle(&self) -> bool {
+        true
+    }
+
     fn fmt_as(
         &self,
         t: DisplayFormatType,

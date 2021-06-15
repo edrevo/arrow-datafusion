@@ -41,8 +41,9 @@ impl Executor {
 }
 
 impl Executor {
-    /// Execute one partition of a query stage and persist the result to disk in IPC format. On
-    /// success, return a RecordBatch containing metadata about the results, including path
+    /// Execute one input partition of a query stage and persist the result to disk in IPC format.
+    ///
+    /// On success, return a [RecordBatch] containing metadata about the results, including path
     /// and statistics.
     pub async fn execute_partition(
         &self,
@@ -50,14 +51,20 @@ impl Executor {
         stage_id: usize,
         part: usize,
         plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<RecordBatch, BallistaError> {
+    ) -> Result<Vec<RecordBatch>, BallistaError> {
+        let output_partitions = plan.output_partitioning().partition_count();
         let exec =
-            QueryStageExec::try_new(job_id, stage_id, plan, self.work_dir.clone(), None)?;
-        let mut stream = exec.execute(part).await?;
-        let batches = utils::collect_stream(&mut stream).await?;
-        // the output should be a single batch containing metadata (path and statistics)
-        assert!(batches.len() == 1);
-        Ok(batches[0].clone())
+            QueryStageExec::try_new(job_id, stage_id, plan, self.work_dir.clone())?;
+        let mut statistics = vec![];
+        // TODO: run these in parallel. This will reduce memory consumption in some scenarios like RepartitionExec
+        for output_partition in 0..output_partitions {
+            let mut stream = exec.execute_input_partition(part, output_partition).await?;
+            let mut batches = utils::collect_stream(&mut stream).await?;
+            // the output should be a single batch containing metadata (path and statistics)
+            assert!(batches.len() == 1);
+            statistics.append(&mut batches);
+        }
+        Ok(statistics)
     }
 
     pub fn work_dir(&self) -> &str {

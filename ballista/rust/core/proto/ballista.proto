@@ -408,10 +408,16 @@ message PhysicalPlanNode {
   }
 }
 
+enum AggregationStrategy {
+  HASH_AGGREGATION = 0;
+  COALESCE = 1;
+}
+
 message UnresolvedShuffleExecNode {
   repeated uint32 query_stage_ids = 1;
   Schema schema = 2;
   uint32 partition_count = 3;
+  AggregationStrategy aggregation_strategy = 4;
 }
 
 message FilterExecNode {
@@ -550,7 +556,7 @@ message Action {
     ExecutePartition execute_partition = 2;
 
     // Fetch a partition from an executor
-    PartitionId fetch_partition = 3;
+    OutputPartitionId fetch_partition = 3;
   }
 
   // configuration settings
@@ -568,16 +574,22 @@ message ExecutePartition {
 
 // Mapping from partition id to executor id
 message PartitionLocation {
-  PartitionId partition_id = 1;
+  OutputPartitionId partition_id = 1;
   ExecutorMetadata executor_meta = 2;
   PartitionStats partition_stats = 3;
 }
 
-// Unique identifier for a materialized partition of data
+// Unique identifier for an input partition of data
 message PartitionId {
   string job_id = 1;
   uint32 stage_id = 2;
   uint32 partition_id = 4;
+}
+
+// Unique identifier for a materialized partition of data
+message OutputPartitionId {
+  PartitionId partition_id = 1;
+  uint32 output_partition_id = 2;
 }
 
 message PartitionStats {

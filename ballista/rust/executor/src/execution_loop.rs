@@ -104,7 +104,7 @@ async fn run_received_tasks(
                 plan,
             )
             .await;
-        info!("DONE WITH TASK: {:?}", execution_result);
+        info!("Done with task: {:?}", execution_result);
         available_tasks_slots.fetch_add(1, Ordering::SeqCst);
         let _ = task_status_sender.send(as_task_status(
             execution_result.map(|_| ()),

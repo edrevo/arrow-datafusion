@@ -27,9 +27,7 @@ use std::{
 use crate::error::{ballista_error, BallistaError, Result};
 use crate::memory_stream::MemoryStream;
 use crate::serde::protobuf::{self};
-use crate::serde::scheduler::{
-    Action, ExecutePartition, ExecutePartitionResult, PartitionId, PartitionStats,
-};
+use crate::serde::scheduler::{Action, ExecutePartition, ExecutePartitionResult, OutputPartitionId, PartitionId, PartitionStats};
 
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::Ticket;
@@ -129,12 +127,10 @@ impl BallistaClient {
     /// Fetch a partition from an executor
     pub async fn fetch_partition(
         &mut self,
-        job_id: &str,
-        stage_id: usize,
-        partition_id: usize,
+        partition_id: OutputPartitionId,
     ) -> Result<SendableRecordBatchStream> {
         let action =
-            Action::FetchPartition(PartitionId::new(job_id, stage_id, partition_id));
+            Action::FetchPartition(partition_id);
         self.execute_action(&action).await
     }
 

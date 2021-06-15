@@ -121,6 +121,7 @@ impl FlightService for BallistaFlightService {
 
                         let mut batches: Vec<Result<FlightData, Status>> = results
                             .iter()
+                            .flatten()
                             .flat_map(|batch| create_flight_iter(batch, &options))
                             .collect();
 

@@ -74,7 +74,7 @@ use super::{
 };
 
 /// Hash aggregate modes
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum AggregateMode {
     /// Partial aggregate that can be applied in parallel across input partitions
     Partial,
@@ -270,6 +270,10 @@ impl ExecutionPlan for HashAggregateExec {
         let mut metrics = HashMap::new();
         metrics.insert("outputRows".to_owned(), (*self.output_rows).clone());
         metrics
+    }
+
+    fn requires_distributed_shuffle(&self) -> bool {
+        self.mode != AggregateMode::Partial
     }
 
     fn fmt_as(

@@ -163,12 +163,32 @@ pub trait ExecutionPlan: Debug + Send + Sync {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>>;
 
-    /// creates an iterator
+    /// Runs the ExecutionPlan for a specific output partition and returns a stream.
     async fn execute(&self, partition: usize) -> Result<SendableRecordBatchStream>;
+
+    /// Creates a partial result by running the execution plan on a single input partition.
+    ///
+    /// The result can still consist of multiple output partitions if there is no 1:1 mapping
+    /// between input and output partitions (e.g. RepartitionExec).
+    async fn execute_input_partition(
+        &self,
+        _input_partition: usize,
+        output_partition: usize,
+    ) -> Result<SendableRecordBatchStream> {
+        self.execute(output_partition).await
+    }
 
     /// Return a snapshot of the metrics collected during execution
     fn metrics(&self) -> HashMap<String, SQLMetric> {
         HashMap::new()
+    }
+
+    /// Whether an ExecutionPlan requires a network shuffle when run in a distributed environment like Ballista
+    ///
+    /// In general, you will want to return `true` if your plan has a custom implementation of [ExecutionPlan::execute_input_partition]
+    /// and `false` otherwise.
+    fn requires_distributed_shuffle(&self) -> bool {
+        false
     }
 
     /// Format this `ExecutionPlan` to `f` in the specified type.
@@ -346,8 +366,8 @@ pub async fn collect_partitioned(
 pub enum Partitioning {
     /// Allocate batches using a round-robin algorithm and the specified number of partitions
     RoundRobinBatch(usize),
-    /// Allocate rows based on a hash of one of more expressions and the specified number of
-    /// partitions
+    /// Allocate rows based on a hash of one of more expressions and the specified
+    /// number of partitions
     Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
     /// Unknown partitioning scheme with a known number of partitions
     UnknownPartitioning(usize),
@@ -394,6 +414,7 @@ impl ColumnarValue {
         }
     }
 
+    /// Convert a columnar value into an ArrayRef
     fn into_array(self, num_rows: usize) -> ArrayRef {
         match self {
             ColumnarValue::Array(array) => array,

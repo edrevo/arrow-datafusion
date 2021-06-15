@@ -22,7 +22,9 @@ use std::convert::TryInto;
 use std::sync::Arc;
 
 use crate::error::BallistaError;
-use crate::execution_plans::{ShuffleReaderExec, UnresolvedShuffleExec};
+use crate::execution_plans::{
+    AggregationStrategy, ShuffleReaderExec, UnresolvedShuffleExec,
+};
 use crate::serde::protobuf::repartition_exec_node::PartitionMethod;
 use crate::serde::protobuf::LogicalExprNode;
 use crate::serde::protobuf::ShuffleReaderPartition;
@@ -389,6 +391,13 @@ impl TryInto<Arc<dyn ExecutionPlan>> for &protobuf::PhysicalPlanNode {
             }
             PhysicalPlanType::Unresolved(unresolved_shuffle) => {
                 let schema = Arc::new(convert_required!(unresolved_shuffle.schema)?);
+                let aggregation_strategy = protobuf::AggregationStrategy::from_i32(unresolved_shuffle.aggregation_strategy)
+                    .ok_or_else(|| {
+                        proto_error(format!(
+                            "Received an UnresolvedShuffle message with unknown AggregationStrategy {}",
+                            unresolved_shuffle.aggregation_strategy
+                        ))
+                    })?;
                 Ok(Arc::new(UnresolvedShuffleExec {
                     query_stage_ids: unresolved_shuffle
                         .query_stage_ids
@@ -397,6 +406,14 @@ impl TryInto<Arc<dyn ExecutionPlan>> for &protobuf::PhysicalPlanNode {
                         .collect(),
                     schema,
                     partition_count: unresolved_shuffle.partition_count as usize,
+                    aggregation_strategy: match aggregation_strategy {
+                        protobuf::AggregationStrategy::Coalesce => {
+                            AggregationStrategy::Coalesce
+                        }
+                        protobuf::AggregationStrategy::HashAggregation => {
+                            AggregationStrategy::HashAggregation
+                        }
+                    },
                 }))
             }
         }

@@ -24,6 +24,8 @@ use crate::serde::scheduler::{
     Action, ExecutePartition, PartitionId, PartitionLocation, PartitionStats,
 };
 
+use super::OutputPartitionId;
+
 impl TryInto<protobuf::Action> for Action {
     type Error = BallistaError;
 
@@ -62,6 +64,16 @@ impl Into<protobuf::PartitionId> for PartitionId {
             job_id: self.job_id,
             stage_id: self.stage_id as u32,
             partition_id: self.partition_id as u32,
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::OutputPartitionId> for OutputPartitionId {
+    fn into(self) -> protobuf::OutputPartitionId {
+        protobuf::OutputPartitionId {
+            partition_id: Some(self.input_partition.into()),
+            output_partition_id: self.output_partition_id as u32,
         }
     }
 }

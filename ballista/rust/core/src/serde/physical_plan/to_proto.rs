@@ -55,7 +55,9 @@ use datafusion::physical_plan::{AggregateExpr, ExecutionPlan, PhysicalExpr};
 use datafusion::physical_plan::hash_aggregate::HashAggregateExec;
 use protobuf::physical_plan_node::PhysicalPlanType;
 
-use crate::execution_plans::{ShuffleReaderExec, UnresolvedShuffleExec};
+use crate::execution_plans::{
+    AggregationStrategy, ShuffleReaderExec, UnresolvedShuffleExec,
+};
 use crate::serde::protobuf::repartition_exec_node::PartitionMethod;
 use crate::serde::scheduler::PartitionLocation;
 use crate::serde::{protobuf, BallistaError};
@@ -351,6 +353,12 @@ impl TryInto<protobuf::PhysicalPlanNode> for Arc<dyn ExecutionPlan> {
                 ))),
             })
         } else if let Some(exec) = plan.downcast_ref::<UnresolvedShuffleExec>() {
+            let aggregation_strategy = match exec.aggregation_strategy {
+                AggregationStrategy::Coalesce => protobuf::AggregationStrategy::Coalesce,
+                AggregationStrategy::HashAggregation => {
+                    protobuf::AggregationStrategy::HashAggregation
+                }
+            };
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Unresolved(
                     protobuf::UnresolvedShuffleExecNode {
@@ -361,6 +369,7 @@ impl TryInto<protobuf::PhysicalPlanNode> for Arc<dyn ExecutionPlan> {
                             .collect(),
                         schema: Some(exec.schema().as_ref().into()),
                         partition_count: exec.partition_count as u32,
+                        aggregation_strategy: aggregation_strategy.into(),
                     },
                 )),
             })

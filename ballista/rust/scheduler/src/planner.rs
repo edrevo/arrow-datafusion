@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use ballista_core::datasource::DfTableAdapter;
 use ballista_core::error::{BallistaError, Result};
+use ballista_core::execution_plans::AggregationStrategy;
 use ballista_core::{
     execution_plans::{QueryStageExec, ShuffleReaderExec, UnresolvedShuffleExec},
     serde::scheduler::PartitionLocation,
@@ -32,10 +33,6 @@ use datafusion::execution::context::{ExecutionConfig, ExecutionContext};
 use datafusion::physical_optimizer::coalesce_batches::CoalesceBatches;
 use datafusion::physical_optimizer::merge_exec::AddMergeExec;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::hash_aggregate::{AggregateMode, HashAggregateExec};
-use datafusion::physical_plan::hash_join::HashJoinExec;
-use datafusion::physical_plan::merge::MergeExec;
-use datafusion::physical_plan::windows::WindowAggExec;
 use datafusion::physical_plan::ExecutionPlan;
 use log::info;
 
@@ -106,74 +103,34 @@ impl DistributedPlanner {
             let config = ExecutionConfig::new().with_physical_optimizer_rules(rules);
             let ctx = ExecutionContext::with_config(config);
             Ok((ctx.create_physical_plan(&adapter.logical_plan)?, stages))
-        } else if let Some(merge) = execution_plan.as_any().downcast_ref::<MergeExec>() {
-            let query_stage = create_query_stage(
-                job_id,
-                self.next_stage_id(),
-                merge.children()[0].clone(),
-            )?;
-            let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
-                vec![query_stage.stage_id()],
-                query_stage.schema(),
-                query_stage.output_partitioning().partition_count(),
-            ));
-            stages.push(query_stage);
-            Ok((merge.with_new_children(vec![unresolved_shuffle])?, stages))
-        } else if let Some(agg) =
-            execution_plan.as_any().downcast_ref::<HashAggregateExec>()
-        {
-            //TODO should insert query stages in more generic way based on partitioning metadata
-            // and not specifically for this operator
-            match agg.mode() {
-                AggregateMode::Final | AggregateMode::FinalPartitioned => {
-                    let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
-                    for child in &children {
-                        let new_stage = create_query_stage(
-                            job_id,
-                            self.next_stage_id(),
-                            child.clone(),
-                        )?;
-                        new_children.push(Arc::new(UnresolvedShuffleExec::new(
-                            vec![new_stage.stage_id()],
-                            new_stage.schema().clone(),
-                            new_stage.output_partitioning().partition_count(),
-                        )));
-                        stages.push(new_stage);
-                    }
-                    Ok((agg.with_new_children(new_children)?, stages))
-                }
-                AggregateMode::Partial => Ok((agg.with_new_children(children)?, stages)),
-            }
-        } else if let Some(join) = execution_plan.as_any().downcast_ref::<HashJoinExec>()
-        {
-            Ok((join.with_new_children(children)?, stages))
-        } else if let Some(window) =
-            execution_plan.as_any().downcast_ref::<WindowAggExec>()
-        {
-            Err(BallistaError::NotImplemented(format!(
-                "WindowAggExec with window {:?}",
-                window
-            )))
-        } else {
-            // TODO check for compatible partitioning schema, not just count
-            if execution_plan.output_partitioning().partition_count()
-                != children[0].output_partitioning().partition_count()
+        } else if execution_plan.requires_distributed_shuffle() {
+            let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
+            let aggregation_strategy = match execution_plan.required_child_distribution()
             {
-                let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
-                for child in &children {
-                    let new_stage =
-                        create_query_stage(job_id, self.next_stage_id(), child.clone())?;
-                    new_children.push(Arc::new(UnresolvedShuffleExec::new(
-                        vec![new_stage.stage_id()],
-                        new_stage.schema().clone(),
-                        new_stage.output_partitioning().partition_count(),
-                    )));
-                    stages.push(new_stage);
+                datafusion::physical_plan::Distribution::UnspecifiedDistribution => {
+                    AggregationStrategy::Coalesce
                 }
-                Ok((execution_plan.with_new_children(new_children)?, stages))
-            } else {
-                Ok((execution_plan.with_new_children(children)?, stages))
+                datafusion::physical_plan::Distribution::SinglePartition => {
+                    AggregationStrategy::Coalesce
+                }
+                datafusion::physical_plan::Distribution::HashPartitioned(_) => {
+                    AggregationStrategy::HashAggregation
+                }
+            };
+            for child in &children {
+                let new_stage =
+                    create_query_stage(job_id, self.next_stage_id(), child.clone())?;
+                new_children.push(Arc::new(UnresolvedShuffleExec::new(
+                    vec![new_stage.stage_id()],
+                    new_stage.schema().clone(),
+                    new_stage.output_partitioning().partition_count(),
+                    aggregation_strategy,
+                )));
+                stages.push(new_stage);
             }
+            Ok((execution_plan.with_new_children(new_children)?, stages))
+        } else {
+            Ok((execution_plan.with_new_children(children)?, stages))
         }
     }
 
@@ -231,7 +188,6 @@ fn create_query_stage(
         stage_id,
         plan,
         "".to_owned(), // executor will decide on the work_dir path
-        None,
     )?))
 }
 
@@ -271,6 +227,13 @@ mod test {
         let plan = df.to_logical_plan();
         let plan = ctx.optimize(&plan)?;
         let plan = ctx.create_physical_plan(&plan)?;
+
+        /*let mut current_plan = plan.clone();
+        println!("{:?} / {:?}", plan, plan.output_partitioning());
+        while !current_plan.children().is_empty() {
+            current_plan = current_plan.children()[0].clone();
+            println!("{:?} / {:?}", current_plan, current_plan.output_partitioning());
+        }*/
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();

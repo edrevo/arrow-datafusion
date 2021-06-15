@@ -115,11 +115,12 @@ impl ExecutionPlan for ShuffleReaderExec {
                         x.iter()
                             .map(|l| {
                                 format!(
-                                    "[executor={} part={}:{}:{} stats={:?}]",
+                                    "[executor={} part={}:{}:{}:{} stats={:?}]",
                                     l.executor_meta.id,
-                                    l.partition_id.job_id,
-                                    l.partition_id.stage_id,
-                                    l.partition_id.partition_id,
+                                    l.partition_id.input_partition.job_id,
+                                    l.partition_id.input_partition.stage_id,
+                                    l.partition_id.input_partition.partition_id,
+                                    l.partition_id.output_partition_id,
                                     l.partition_stats
                                 )
                             })
@@ -144,11 +145,7 @@ async fn fetch_partition(
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
     Ok(ballista_client
-        .fetch_partition(
-            &partition_id.job_id,
-            partition_id.stage_id as usize,
-            partition_id.partition_id as usize,
-        )
+        .fetch_partition(partition_id.clone())
         .await
         .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?)
 }

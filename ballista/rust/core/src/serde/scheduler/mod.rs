@@ -39,16 +39,17 @@ pub enum Action {
     /// Execute a query and store the results in memory
     ExecutePartition(ExecutePartition),
     /// Collect a shuffle partition
-    FetchPartition(PartitionId),
+    FetchPartition(OutputPartitionId),
 }
 
-/// Unique identifier for the output partition of an operator.
+/// Unique identifier for the input partition of an operator.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartitionId {
     pub job_id: String,
     pub stage_id: usize,
     pub partition_id: usize,
 }
+
 
 impl PartitionId {
     pub fn new(job_id: &str, stage_id: usize, partition_id: usize) -> Self {
@@ -60,9 +61,25 @@ impl PartitionId {
     }
 }
 
+/// Unique identifier for the output partition of an operator.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OutputPartitionId {
+    pub input_partition: PartitionId,
+    pub output_partition_id: usize,
+}
+
+impl OutputPartitionId {
+    pub fn new(input_partition: PartitionId, output_partition_id: usize) -> Self {
+        Self {
+            input_partition,
+            output_partition_id
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PartitionLocation {
-    pub partition_id: PartitionId,
+    pub partition_id: OutputPartitionId,
     pub executor_meta: ExecutorMeta,
     pub partition_stats: PartitionStats,
 }
@@ -134,7 +151,8 @@ impl PartitionStats {
             false,
         )
     }
-    fn arrow_struct_fields(self) -> Vec<Field> {
+
+    pub fn arrow_struct_fields(self) -> Vec<Field> {
         vec![
             Field::new("num_rows", DataType::UInt64, false),
             Field::new("num_batches", DataType::UInt64, false),
